@@ -1,0 +1,7 @@
+{
+    "access_token": "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",
+    "model": "gpt-3.5-turbo",
+    "temperature": 0.1,
+    "top_p": 0.1,
+    "max_tokens": 1000
+}
