@@ -39,7 +39,7 @@ Start a multi-agent simulation:
 python3 main.py --num-agents 2 --level partial-divider_salad --gpt
 ```
 
-Mannually control agents with arrow keys (switch between agents by pressing 1 or 2):
+Manually control agents with arrow keys (switch between agents by pressing 1 or 2):
 ```
 python3 main.py --num-agents 2 --level partial-divider_salad --gpt --manual
 ```
