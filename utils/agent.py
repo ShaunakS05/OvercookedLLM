@@ -34,7 +34,6 @@ from utils.astar import *
 from utils.environment import *
 from utils.utils import *
 from utils.chatgpt import ChatGPT, g_openai_config
-from utils.claude import Claude, g_anthropic_config
 
 
 
@@ -257,187 +256,145 @@ class LLMAgent:
 
 
 def llm_proc(arglist):
-    listener = Listener(("localhost", 6000)) # family is deduced to be 'AF_INET'
-    #print(colors.GREEN + f"LLM listener.address: {listener.address}" + colors.ENDC)
-    connection = None
+    """
+    Runs in a separate process.  Reads game-state messages on a background
+    thread (so the producer never blocks) and talks to ChatGPT on a
+    background thread as well.
+    """
+    import queue, threading, sys, time
+    from multiprocessing.connection import Listener
+    from utils.llm_async import ask_async
 
-    agent1 = LLMAgent(1, arglist)
-    agent2 = LLMAgent(2, arglist)
+    # 1.  create the pipe listener
+    listener   = Listener(("localhost", 6000))
+    connection = None                      # placeholder for non-local access
 
-    global g_openai_config, g_anthropic_config
-    chatbot = None
-    llm = None
-    if arglist.gpt:
-        chatbot = ChatGPT(g_openai_config, arglist)
-        llm = "ChatGPT"
-    elif arglist.claude:
-        chatbot = Claude(g_anthropic_config, arglist)
-        llm = "Claude"
-    assert chatbot is not None, "llm_proc(): chatbot is None"
+    # 2.  two helper agents (unchanged)
+    agent1, agent2 = LLMAgent(1, arglist), LLMAgent(2, arglist)
 
-    ##########################################################
-    def __update_state() -> bool:
-        """receive the latest state from the game
-        Returns:
-            bool: success or failure
-        """
-        nonlocal listener, connection, agent1, agent2
-        if listener.last_accepted is None:
-            try:
-                connection = listener.accept() # blocking
-                print(colors.GREEN + f"listener.last_accepted: {listener.last_accepted}" + colors.ENDC)
-            except Exception as e:
-                print(colors.RED + f"Exception in listener.accept(): {e}" + colors.ENDC)
-                return False
-        if listener.last_accepted is not None:
-            try:
-                if connection.poll(): # non-blocking, returns True if new data is found
-                    msg = connection.recv()
-                    while connection.poll(): # retrieve the last data, discard the previous ones
-                        msg = connection.recv()
+    # 3.  choose the LLM wrapper
+    if not arglist.gpt:
+        raise RuntimeError("Async patch currently supports --gpt only")
+    chatbot = ChatGPT(g_openai_config, arglist)   # <- already imported above
+    llm_name = "ChatGPT"
 
-                    # state: [game frame, agent id, agent location, agent action string, agent action location]
-                    print(f"received the current game state: {msg}")
-                    agent_id: int = msg[1]
-                    if agent_id == 1:
-                        agent1.set_state(location=msg[2], action_str=msg[3], action_loc=msg[4])
-                    elif agent_id == 2:
-                        agent2.set_state(location=msg[2], action_str=msg[3], action_loc=msg[4])
+    # ------------------------------------------------------------------
+    # 4.  BACKGROUND PIPE DRAINER
+    # ------------------------------------------------------------------
+    state_q: queue.Queue = queue.Queue(maxsize=1)  # keep only latest state
 
-                #else:
-                #    print("WARNING: no new data from client")
-            except Exception as e:
-                    print(colors.RED + f"Exception in __update_state(): {e}" + colors.ENDC)
-                    return False
-            return True
-        return False
-    ##########################################################
-
-    if arglist.debug:
-        task_queue = []
-        if arglist.num_agents == 1:
-            task_queue.append((agent1.fetch, "tomato"))
-            task_queue.append((agent1.put_onto, "cutboard0"))
-            task_queue.append((agent1.slice_on, "cutboard0"))
-            task_queue.append((agent1.fetch, "tomato"))
-            task_queue.append((agent1.put_onto, "plate0"))
-            task_queue.append((agent1.fetch, "lettuce"))
-            task_queue.append((agent1.put_onto, "cutboard0"))
-            task_queue.append((agent1.slice_on, "cutboard0"))
-            task_queue.append((agent1.fetch, "lettuce"))
-            task_queue.append((agent1.put_onto, "plate0"))
-            task_queue.append((agent1.fetch, "lettuce"))
-            task_queue.append((agent1.deliver, None))
-        elif arglist.num_agents == 2:
-            task_queue.append((agent2.fetch, "tomato"))
-            task_queue.append((agent2.put_onto, "counter0"))
-            task_queue.append((agent1.fetch, "tomato"))
-            task_queue.append((agent1.put_onto, "cutboard0"))
-            task_queue.append((agent1.slice_on, "cutboard0"))
-            task_queue.append((agent2.fetch, "lettuce"))
-            task_queue.append((agent2.put_onto, "counter0"))
-            task_queue.append((agent1.fetch, "lettuce"))
-            task_queue.append((agent1.put_onto, "cutboard1"))
-            task_queue.append((agent1.slice_on, "cutboard1"))
-            task_queue.append((agent2.fetch, "plate0"))
-            task_queue.append((agent2.put_onto, "counter0"))
-            task_queue.append((agent1.fetch, "tomato"))
-            task_queue.append((agent1.put_onto, "counter0"))
-            task_queue.append((agent1.fetch, "lettuce"))
-            task_queue.append((agent1.put_onto, "counter0"))
-            task_queue.append((agent1.fetch, "lettuce"))
-            task_queue.append((agent1.deliver, None))
-        else:
-            assert False, f"arglist.num_agents must be 1 or 2: {arglist.num_agents}"
-    else:
-        time.sleep(2)
-        sys.stdin = open(0)  # input() does not work with multiprocessing without this line
-        question = input(colors.GREEN + "Enter a task: " + colors.ENDC)
-        print(colors.YELLOW + f"{llm}: Thinking...please wait...\n" + colors.ENDC)
-        num_retries = 0
-        max_retries = 5
-        while num_retries < max_retries:
-            response: str = chatbot(question)
-            #print("\n-------------------------- response --------------------------")
-            #print(colors.YELLOW + "ChatGPT: " + colors.ENDC + response)
-            code: str = extract_python_code(response)
-            if code is None:
-                print(colors.RED + "ERROR: no python code found in the response. Retrying..." + colors.ENDC)
-                num_retries += 1
-                question = "You must generate valid Python code. Please try again."
-                continue
-            else:
-                if len(code) == 0:
-                    print(colors.RED + "ERROR: python code is empty. Retrying..." + colors.ENDC)
-                    num_retries += 1
-                    question = "You must generate valid Python code. Please try again."
+    def _pipe_reader():
+        nonlocal connection
+        while True:
+            # accept (once) if not yet connected
+            if listener.last_accepted is None:
+                try:
+                    connection = listener.accept()          # blocks
+                    print(colors.GREEN + "[llm_proc] pipe connected"
+                          + colors.ENDC)
+                except Exception:
                     continue
-                else:
-                    print("\nPlease wait while I execute the above code...")
-                    try:
-                        # existing local vars must be given explicitly as a dict
-                        ldict = {"agent1": agent1, "agent2": agent2}
-                        exec(code, globals(), ldict)#locals())
-                        task_queue = ldict["task_queue"]
-                        print("Done executing code.")
-                        break
-                    except Exception as e:
-                        print(colors.RED + "ERROR: could not execute the code: {}\nRetrying...".format(e) + colors.ENDC)
-                        num_retries += 1
-                        question = "While executing your code I've encountered the following error: {}\nPlease fix the error and show me valid code.".format(e)
-                        continue
-        print("Excecuting the task queue in the simulator...")
-        time.sleep(2)
 
-    max_steps = 100
+            # now drain messages forever
+            try:
+                msg = connection.recv()                     # blocks
+                # keep only the newest game-state in the queue
+                while not state_q.empty():
+                    state_q.get_nowait()
+                state_q.put_nowait(msg)
+            except EOFError:
+                break                                       # producer died
 
-    i, j = -1, 0
+    threading.Thread(target=_pipe_reader, daemon=True).start()
+
+    def _apply_latest_state():
+        """Non-blocking: update agent objects with newest world state."""
+        while not state_q.empty():
+            msg = state_q.get_nowait()
+            agent_id = msg[1]
+            if agent_id == 1:
+                agent1.set_state(msg[2], msg[3], msg[4])
+            elif agent_id == 2:
+                agent2.set_state(msg[2], msg[3], msg[4])
+
+    # ------------------------------------------------------------------
+    # 5.  ask the LLM *without* blocking
+    # ------------------------------------------------------------------
+    sys.stdin = open(0)                     # re-attach TTY for input()
+    question  = input(colors.GREEN + "Enter a task: " + colors.ENDC)
+
+    print(colors.YELLOW + f"{llm_name}: thinking (async)…" + colors.ENDC)
+    reply_q          = chatbot.ask_async(question)   # returns instantly
+    waiting_for_llm  = True
+
+    task_queue: list = []
+    max_steps        = 100
+    i = j = 0
     done = False
+
+    # ------------------------------------------------------------------
+    # 6.  main control loop – never blocks >5 ms
+    # ------------------------------------------------------------------
     while True:
-        time.sleep(0.5)
+        time.sleep(0.005)        # 5 ms tick; keeps CPU low but responsive
+
         if done or arglist.manual:
-            if listener is not None:
-                listener.close()
-                listener = None
-            continue
+            continue             # nothing to do (manual mode ends here)
+
+        # 6-A Poll the LLM reply queue
+        if waiting_for_llm:
+            try:
+                reply = reply_q.get_nowait()
+                if isinstance(reply, Exception):
+                    print(colors.RED + "LLM error:\n" + str(reply) + colors.ENDC)
+                    done = True
+                    continue
+
+                code = extract_python_code(reply)
+                if not code:
+                    print(colors.RED + "No Python found in LLM reply" + colors.ENDC)
+                    done = True
+                    continue
+
+                print("\nExecuting LLM-generated code …")
+                local_env = {"agent1": agent1, "agent2": agent2}
+                exec(code, globals(), local_env)     # defines task_queue
+                task_queue = local_env["task_queue"]
+                waiting_for_llm = False
+                print(colors.GREEN + "Task queue ready!" + colors.ENDC)
+            except queue.Empty:
+                _apply_latest_state()
+                continue        # loop again
+
+        # 6-B normal simulator tick
+        _apply_latest_state()
 
         i += 1
-        print("--------------------------------------------------------")
-        print(f"i={i}")
-        if i == max_steps:
-            print(colors.RED + f"GAME OVER ({max_steps} max steps consumed)" + colors.ENDC)
+        if i >= max_steps:
+            print(colors.RED + f"GAME OVER ({max_steps} steps)" + colors.ENDC)
             done = True
             continue
 
-        if not(done):
-            f = task_queue[j][0]
-            arg = task_queue[j][1]
+        func, arg = task_queue[j]
 
-            global g_keyboard
-            if str(agent1) in str(f):
-                print("agent1 is in the task")
-                agent1.reset_state()
-                g_keyboard.press('1')
-                g_keyboard.release('1')
-                while agent1.location is None:
-                    if not(__update_state()):
-                        pass#time.sleep(1)
-            elif str(agent2) in str(f):
-                print("agent2 is in the task")
-                agent2.reset_state()
-                g_keyboard.press('2')
-                g_keyboard.release('2')
-                #time.sleep(0.5)
-                while agent2.location is None:
-                    if not(__update_state()):
-                        pass#time.sleep(1)
+        # switch control to correct human/LLM chef
+        if str(agent1) in str(func):
+            agent1.reset_state()
+            g_keyboard.press('1'); g_keyboard.release('1')
+            while agent1.location is None:
+                _apply_latest_state()
+        else:
+            agent2.reset_state()
+            g_keyboard.press('2'); g_keyboard.release('2')
+            while agent2.location is None:
+                _apply_latest_state()
 
-            if f(arg):
-                print(colors.GREEN + f"task complete: {str(f)}({str(arg)})" + colors.ENDC)
-                j += 1
-                if j == len(task_queue):
-                    print(colors.GREEN + f"ALL TASKS COMPLETE: score={i} (lower the better)" + colors.ENDC)
-                    done = True
+        if func(arg):
+            print(colors.GREEN + f"Task done: {func.__name__}({arg})" + colors.ENDC)
+            j += 1
+            if j == len(task_queue):
+                print(colors.GREEN + "ALL TASKS COMPLETE!" + colors.ENDC)
+                done = True
 
 
 class RealAgent:
