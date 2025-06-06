@@ -1,3 +1,5 @@
+import recipe_planner.recipe as recipe_defs
+from recipe_planner.recipe import *
 # Recipe planning
 from recipe_planner.stripsworld import STRIPSWorld
 import recipe_planner.utils as recipe
@@ -103,7 +105,7 @@ class OvercookedEnvironment(gym.Env):
                 elif phase == 1:
                     for x, rep in enumerate(line):
                         # Object, i.e. Tomato, Lettuce, Onion, or Plate.
-                        if rep in 'tlop':
+                        if rep in 'tlopbu':
                             counter = Counter(location=(x, y))
                             obj = Object(
                                     location=(x, y),
@@ -122,7 +124,7 @@ class OvercookedEnvironment(gym.Env):
                     y += 1
                 # Phase 2: Read in recipe list.
                 elif phase == 2:
-                    self.recipes.append(globals()[line]())
+                    self.recipes.append(getattr(recipe_defs, line)())  
 
                 # Phase 3: Read in agent locations (up to num_agents).
                 elif phase == 3:
@@ -289,9 +291,15 @@ class OvercookedEnvironment(gym.Env):
 
             # B: Cutboard objects.
             B_locs = self.world.get_all_object_locs(obj=subtask_action_obj)
-
         # For Merge operator on Deliver subtasks, we look at objects that can be
         # delivered and the Delivery object.
+        elif isinstance(subtask, recipe.Cook):
+            A_locs = self.world.get_object_locs(obj=start_obj, is_held=False) + [
+                a.location for a in self.sim_agents
+                if a.name in subtask_agent_names and a.holding == start_obj
+            ]
+            B_locs = self.world.get_all_object_locs(obj=subtask_action_obj)  # Skillet
+
         elif isinstance(subtask, recipe.Deliver):
             # B: Delivery objects.
             B_locs = self.world.get_all_object_locs(obj=subtask_action_obj)
@@ -436,7 +444,7 @@ class OvercookedEnvironment(gym.Env):
 
     def cache_distances(self):
         """Saving distances between world objects."""
-        counter_grid_names = [name for name in self.world.objects if "Supply" in name or "Counter" in name or "Delivery" in name or "Cut" in name]
+        counter_grid_names = [name for name in self.world.objects if "Supply" in name or "Counter" in name or "Delivery" in name or "Cut" in name or "Skillet" in name]
         # Getting all source objects.
         source_objs = copy.copy(self.world.objects["Floor"])
         for name in counter_grid_names:

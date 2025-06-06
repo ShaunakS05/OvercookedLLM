@@ -24,6 +24,9 @@ class Rep:
     LETTUCE = 'l'
     ONION = 'o'
     PLATE = 'p'
+    SKILLET = 's'
+    BURGER = 'b'
+    BUN = 'u'
 
 class GridSquare:
     def __init__(self, name, location):
@@ -92,6 +95,17 @@ class Cutboard(GridSquare):
     def __init__(self, location):
         GridSquare.__init__(self, "Cutboard", location)
         self.rep = Rep.CUTBOARD
+        self.collidable = True
+    def __eq__(self, other):
+        return GridSquare.__eq__(self, other)
+    def __hash__(self):
+        return GridSquare.__hash__(self)
+    
+#new
+class Skillet(GridSquare):
+    def __init__(self, location):
+        GridSquare.__init__(self, "Skillet", location)
+        self.rep = Rep.SKILLET
         self.collidable = True
     def __eq__(self, other):
         return GridSquare.__eq__(self, other)
@@ -233,10 +247,12 @@ def mergeable(obj1, obj2):
 class FoodState:
     FRESH = globals()['recipe'].__dict__['Fresh']
     CHOPPED = globals()['recipe'].__dict__['Chopped']
+    COOKED = globals()['recipe'].__dict__['Cooked']
 
 class FoodSequence:
     FRESH = [FoodState.FRESH]
     FRESH_CHOPPED = [FoodState.FRESH, FoodState.CHOPPED]
+    FRESH_COOKED = [FoodState.FRESH, FoodState.COOKED]
 
 class Food:
     def __init__(self):
@@ -321,6 +337,31 @@ class Onion(Food):
         return Food.__eq__(self, other)
     def __hash__(self):
         return Food.__hash__(self)
+#new
+class Burger(Food):
+    def __init__(self, state_index = 0):
+        self.state_index = state_index
+        self.state_seq = [FoodState.FRESH, FoodState.COOKED]
+        self.rep = 'b'
+        self.name = 'Burger'
+        Food.__init__(self)
+    def __eq__(self, other):
+        return Food.__eq__(self, other)
+    def __hash__(self):
+        return Food.__hash__(self)
+
+class Bun(Food):
+    def __init__(self, state_index = 0):
+        self.state_index = state_index
+        self.state_seq = [FoodState.FRESH]
+        self.rep = 'u'
+        self.name = 'Bun'
+        Food.__init__(self)
+    def __eq__(self, other):
+        return Food.__eq__(self, other)
+    def __hash__(self):
+        return Food.__hash__(self)
+
 
 
 # -----------------------------------------------------------
@@ -347,14 +388,17 @@ class Plate:
 # PARSING
 # -----------------------------------------------------------
 RepToClass = {
-    Rep.FLOOR: globals()['Floor'],
-    Rep.COUNTER: globals()['Counter'],
-    Rep.CUTBOARD: globals()['Cutboard'],
-    Rep.DELIVERY: globals()['Delivery'],
-    Rep.TOMATO: globals()['Tomato'],
-    Rep.LETTUCE: globals()['Lettuce'],
-    Rep.ONION: globals()['Onion'],
-    Rep.PLATE: globals()['Plate'],
+    Rep.FLOOR: Floor,
+    Rep.COUNTER: Counter,
+    Rep.CUTBOARD: Cutboard,
+    Rep.DELIVERY: Delivery,
+    Rep.TOMATO: Tomato,
+    Rep.LETTUCE: Lettuce,
+    Rep.ONION: Onion,
+    Rep.PLATE: Plate,
+    Rep.BURGER: Burger,
+    Rep.BUN: Bun,
+    Rep.SKILLET: Skillet,
 }
 
 
