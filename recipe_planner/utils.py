@@ -161,6 +161,14 @@ class Deliver(Action):
         self.post_add_default = [Delivered(obj)]
         Action.__init__(self, 'Deliver', pre, post_add)
 
+class Cook(Action):
+    def __init__(self, obj, pre=None, post_add=None):
+        self.args = (obj,)
+        self.pre_default = [Fresh(obj)]  # or a separate predicate like Raw(obj)
+        self.post_add_default = [Cooked(obj)]
+        Action.__init__(self, 'Cook', pre, post_add)
+
+
 
 
 # STRIPSSTATE

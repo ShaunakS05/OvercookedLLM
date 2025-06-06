@@ -1,7 +1,6 @@
-from utils.core import *
+
 import recipe_planner.utils as recipe
-
-
+from itertools import combinations
 class Recipe:
     def __init__(self, name):
         self.name = name
@@ -22,6 +21,9 @@ class Recipe:
             self.actions.add(recipe.Chop(item.name))
             self.actions.add(recipe.Merge(item.name, 'Plate',\
                 [item.state_seq[-1](item.name), recipe.Fresh('Plate')], None))
+        elif item.state_seq == FoodSequence.FRESH_COOKED:
+            self.actions.add(recipe.Cook(item.name))
+            self.actions.add(recipe.Merge(item.name, 'Plate', [item.state_seq[-1](item.name), recipe.Fresh('Plate')], None))
 
     def add_goal(self):
         self.contents = sorted(self.contents, key = lambda x: x.name)   # list of Food objects
@@ -65,6 +67,7 @@ class Recipe:
                             [recipe.Merged(plate_str), recipe.Merged(rem_str)], None))
                         self.actions.add(recipe.Merge(item, rem_plate_str))
 
+
 class SimpleTomato(Recipe):
     def __init__(self):
         Recipe.__init__(self, 'Tomato')
@@ -96,4 +99,12 @@ class OnionSalad(Recipe):
         self.add_goal()
         self.add_merge_actions()
 
+class SimpleBurger(Recipe):
+    def __init__(self):
+        Recipe.__init__(self, 'SimpleBurger')
+        self.add_ingredient(Burger(state_index=-1))
+        self.add_ingredient(Bun(state_index=-1))
+        self.add_goal()
+        self.add_merge_actions()
 
+from utils.core import *

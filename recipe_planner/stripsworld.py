@@ -17,7 +17,7 @@ class STRIPSWorld:
         self.initial.add_predicate(recipe.NoPredicate())
         for obj in world.get_object_list():
             if isinstance(obj, Object):
-                for obj_name in ['Plate', 'Tomato', 'Lettuce', 'Onion']:
+                for obj_name in ['Plate', 'Tomato', 'Lettuce', 'Onion', 'Burger', 'Bun']:
                     if obj.contains(obj_name):
                         self.initial.add_predicate(recipe.Fresh(obj_name))
 

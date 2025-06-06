@@ -17,6 +17,8 @@ from multiprocessing import Process
 import gym
 
 
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser("Overcooked 2 argument parser")
 
