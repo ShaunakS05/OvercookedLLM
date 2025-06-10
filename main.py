@@ -12,7 +12,7 @@ import numpy as np
 import random
 import argparse
 from collections import namedtuple
-from multiprocessing import Process
+import threading
 
 import gym
 
@@ -134,12 +134,9 @@ def start_game(arglist):
 if __name__ == '__main__':
     arglist = parse_arguments()
     if arglist.gpt or arglist.claude:
-        p = Process(target=llm_proc, args=(arglist,))
-        p.start()  # enters loop
-        start_game(arglist) # enters loop
-        if p.is_alive():
-            p.terminate()
-        p.join()
+        t = threading.Thread(target=llm_proc, args=(arglist,), daemon=True)
+        t.start()
+        start_game(arglist)
     else:
         model_types = [arglist.model1, arglist.model2, arglist.model3, arglist.model4]
         assert len(list(filter(lambda x: x is not None,

@@ -86,9 +86,10 @@ class ChatGPT:
     # --------------------------------------------------------------------- #
     def ask_async(self, message: str):
         """
-        Fire the request *without* blocking.  Returns a Queue.  Poll it with
-        `q.get_nowait()` from your game loop; when data arrives it is either
-        `str` (the reply) or `RuntimeError`.
+        Fire the request *without* blocking. Returns a Queue immediately.
+        Later, q.get_nowait() yields either:
+          • str          – the assistant’s reply, or
+          • RuntimeError – traceback if something went wrong.
         """
         all_msgs = self.messages + [{"role": "user", "content": message}]
         return ask_async(
@@ -99,4 +100,4 @@ class ChatGPT:
             top_p=self.top_p,
             frequency_penalty=0.0,
             presence_penalty=0.0,
-            stream=False)            # disable streaming inside worker
+        )

@@ -34,6 +34,7 @@ from utils.astar import *
 from utils.environment import *
 from utils.utils import *
 from utils.chatgpt import ChatGPT, g_openai_config
+import pygame
 
 
 
@@ -134,84 +135,92 @@ class LLMAgent:
         if reset_on_hand:
             self.on_hand = None
 
-    def move_to(self, destination: Tuple[int, int]) -> bool:
-        """ move to the specified destination
-        Args:
-            destination (Tuple[int, int]): 2D coordinate of the destination
-        Returns:
-            bool: True when the agent has reached the destination
+    def plan_move_towards(self, dst: Tuple[int, int]) -> Tuple[int, int]:
         """
-        if not isinstance(destination, tuple):
-            print(colors.RED + f"ERROR: destination is not a tuple: {destination}" + colors.ENDC)
-            return False
-        if self.__has_reached(destination):
-            print(colors.YELLOW + f"agent{self.id}.move_to(): reached destination" + colors.ENDC)
-            return True
-        dx = destination[0] - self.location[0]
-        dy = destination[1] - self.location[1]
-        print(colors.YELLOW + f"agent{self.id}.move_to(): source={self.location}, destination={destination}, (dx, dy) = ({dx}, {dy})" + colors.ENDC)
-        global g_keyboard
-        if dx < 0:
-            g_keyboard.press(Key.left)
-            g_keyboard.release(Key.left)
-            return False
-        elif dx > 0:
-            g_keyboard.press(Key.right)
-            g_keyboard.release(Key.right)
-            return False
-        if dy < 0:
-            g_keyboard.press(Key.up)
-            g_keyboard.release(Key.up)
-            return False
-        elif dy > 0:
-            g_keyboard.press(Key.down)
-            g_keyboard.release(Key.down)
-            return False
+        First try an A* route to `dst`.  If that point is blocked,
+        try each 4-neighbour square around it.  As a last resort fall
+        back to the greedy step.
+        """
+        if self.location == dst:
+            return (0, 0)
+
+        def try_astar(target: Tuple[int, int]):
+            path = find_path(self.location, target, self.level, verbose=False)
+            return path if path and len(path) >= 2 else None
+
+        # 1️⃣  straight to the goal
+        path = try_astar(dst)
+
+        # 2️⃣  if the dispenser itself is blocked, aim for a touching tile
+        if path is None and self.level[dst[0]][dst[1]]:          # non-walkable
+            for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nbr = (dst[0] + dx, dst[1] + dy)
+                # skip if neighbour is outside map or blocked
+                if not (0 <= nbr[0] < len(self.level) and
+                        0 <= nbr[1] < len(self.level[0]) and
+                        self.level[nbr[0]][nbr[1]] == 0):
+                    continue
+                path = try_astar(nbr)
+                if path:
+                    break
+
+        # 3️⃣  good A* route found
+        if path:
+            next_sq = path[1]
+            return (next_sq[0] - self.location[0],
+                    next_sq[1] - self.location[1])
+
+        # 4️⃣  still no path → fall back to greedy single-step
+        dx, dy = dst[0] - self.location[0], dst[1] - self.location[1]
+        if abs(dx) > abs(dy):
+            return (-1, 0) if dx < 0 else (1, 0)
+        else:
+            return (0, -1) if dy < 0 else (0, 1)
 
     def fetch(self, item: str) -> bool:
-        """ move to the item's location and pick it up
-        Args:
-            item (str): item to be picked up
-        Returns:
-            bool: success or failure
-        """
-        if self.on_hand is not None:
-            for obj in self.on_hand:
-                if item in obj:
-                    return True  # item is already in hand
-        for key in self.item_locations.keys():
-            if item == key:
-                destination, level = get_dst_tuple(item, self.level, self.item_locations)
-                path: List[Tuple[int, int]] = find_path(self.location, destination, level)
-                print(colors.YELLOW + f"agent{self.id}.fetch(): path={path}" + colors.ENDC)
-                self.move_to(path[1])
-                break
-        return False
-
-    def put_onto(self, item) -> bool:
-        """ place the object in hand onto the specified item
-        Args:
-            item (str or Tuple[int, int]): where to put the object
-        Returns:
-            bool: True if the task is closed
-        """
-        if self.on_hand is None:
-            #print(colors.RED + f"LLMAgent.put_onto(): nothing in hand to put" + colors.ENDC)
+        # 1. if already in hand, done
+        if self.on_hand and item in self.on_hand:
             return True
-        destination, level = None, None
-        if isinstance(item, str):
-            if not(item in self.item_locations.keys()):
-                print(colors.RED + f"agent{self.id}.put_onto(): invalid item: {item}" + colors.ENDC)
-                return True
-            destination, level = get_dst_tuple(item, self.level, self.item_locations)
-        elif isinstance(item, tuple):
-            pass #TODO: also accept 2D coordinate
-        else:
-            assert False, f"item must be str or Tuple[int, int]: {type(item)}"
-        path: List[Tuple[int, int]] = find_path(self.location, destination, level)
-        print(colors.YELLOW + f"agent{self.id}.put_onto(): path={path}" + colors.ENDC)
-        self.move_to(path[1])
-        return False
+
+        # 2. compute next step
+        dst, _ = get_dst_tuple(item, self.level, self.item_locations)
+        step = self.plan_move_towards(dst)
+
+        # 3. post into pygame event queue
+        key = {
+            (-1,0): pygame.K_LEFT,
+            ( 1,0): pygame.K_RIGHT,
+            ( 0,-1): pygame.K_UP,
+            ( 0, 1): pygame.K_DOWN
+        }.get(step, pygame.K_SPACE)  # SPACE when step==(0,0)
+
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {'key': key}))
+        pygame.event.post(pygame.event.Event(pygame.KEYUP,   {'key': key}))
+
+        time.sleep(0.12)
+
+        # 4. return True once set_state() has updated on_hand
+        return bool(self.on_hand and item in self.on_hand)
+
+    def put_onto(self, item: str) -> bool:
+        if not self.on_hand:
+            return True
+
+        dst, _ = get_dst_tuple(item, self.level, self.item_locations)
+        step = self.plan_move_towards(dst)
+
+        key = {
+            (-1,0): pygame.K_LEFT,
+            ( 1,0): pygame.K_RIGHT,
+            ( 0,-1): pygame.K_UP,
+            ( 0, 1): pygame.K_DOWN
+        }.get(step, pygame.K_SPACE)
+
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {'key': key}))
+        pygame.event.post(pygame.event.Event(pygame.KEYUP,   {'key': key}))
+
+        time.sleep(0.12)
+        return not bool(self.on_hand)
 
     def slice_on(self, item: str) -> bool:
         """ slice food at the specified item's location
@@ -236,20 +245,21 @@ class LLMAgent:
         return False
 
     def deliver(self, dummy=None) -> bool:
-        """ deliver the food to the goal destination (i.e., "star")
-        Args:
-            dummy (_type_, optional): ignored
-        Returns:
-            bool: True if the task is closed
-        """
-        destination = list(self.item_locations["star"])
-        destination[0] += 1
-        if self.move_to(tuple(destination)):
-            # reached the destination
-            global g_keyboard
-            g_keyboard.press(Key.left)
-            return True
-        return False
+        dst = list(self.item_locations["star"]); dst[0] += 1
+        step = self.plan_move_towards(tuple(dst))
+
+        key = {
+            (-1,0): pygame.K_LEFT,
+            ( 1,0): pygame.K_RIGHT,
+            ( 0,-1): pygame.K_UP,
+            ( 0, 1): pygame.K_DOWN
+        }.get(step, pygame.K_SPACE)
+
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {'key': key}))
+        pygame.event.post(pygame.event.Event(pygame.KEYUP,   {'key': key}))
+
+        time.sleep(0.12)
+        return not bool(self.on_hand)
 
     def __has_reached(self, destination) -> bool:
         return (self.location[0] == destination[0]) and (self.location[1] == destination[1])
@@ -257,127 +267,113 @@ class LLMAgent:
 
 def llm_proc(arglist):
     """
-    Runs in a separate process.  Reads game-state messages on a background
-    thread (so the producer never blocks) and talks to ChatGPT on a
-    background thread as well.
+    Runs in its own process.  
+    • Drains the game→LLM pipe on a background thread  
+    • Asks ChatGPT via ask_async() so it never blocks  
+    • Parses & execs the reply into a task_queue  
+    • Steps through that queue, pressing keys until done
     """
     import queue, threading, sys, time
+
     from multiprocessing.connection import Listener
-    from utils.llm_async import ask_async
 
-    # 1.  create the pipe listener
-    listener   = Listener(("localhost", 6000))
-    connection = None                      # placeholder for non-local access
-
-    # 2.  two helper agents (unchanged)
-    agent1, agent2 = LLMAgent(1, arglist), LLMAgent(2, arglist)
-
-    # 3.  choose the LLM wrapper
-    if not arglist.gpt:
-        raise RuntimeError("Async patch currently supports --gpt only")
-    chatbot = ChatGPT(g_openai_config, arglist)   # <- already imported above
-    llm_name = "ChatGPT"
-
-    # ------------------------------------------------------------------
-    # 4.  BACKGROUND PIPE DRAINER
-    # ------------------------------------------------------------------
-    state_q: queue.Queue = queue.Queue(maxsize=1)  # keep only latest state
+    # 1) set up listener + state queue
+    listener = Listener(("localhost", 6000))
+    state_q: queue.Queue = queue.Queue(maxsize=1)
 
     def _pipe_reader():
-        nonlocal connection
+        conn = None
         while True:
-            # accept (once) if not yet connected
             if listener.last_accepted is None:
-                try:
-                    connection = listener.accept()          # blocks
-                    print(colors.GREEN + "[llm_proc] pipe connected"
-                          + colors.ENDC)
-                except Exception:
-                    continue
-
-            # now drain messages forever
+                conn = listener.accept()
+                print(colors.GREEN + "[llm_proc] pipe connected" + colors.ENDC)
             try:
-                msg = connection.recv()                     # blocks
-                # keep only the newest game-state in the queue
-                while not state_q.empty():
-                    state_q.get_nowait()
-                state_q.put_nowait(msg)
+                msg = conn.recv()
             except EOFError:
-                break                                       # producer died
+                break
+            # keep only freshest state
+            while not state_q.empty():
+                state_q.get_nowait()
+            state_q.put_nowait(msg)
 
     threading.Thread(target=_pipe_reader, daemon=True).start()
 
     def _apply_latest_state():
-        """Non-blocking: update agent objects with newest world state."""
         while not state_q.empty():
-            msg = state_q.get_nowait()
-            agent_id = msg[1]
+            _, agent_id, loc, act_str, act_loc = state_q.get_nowait()
             if agent_id == 1:
-                agent1.set_state(msg[2], msg[3], msg[4])
-            elif agent_id == 2:
-                agent2.set_state(msg[2], msg[3], msg[4])
+                agent1.set_state(loc, act_str, act_loc)
+            else:
+                agent2.set_state(loc, act_str, act_loc)
 
-    # ------------------------------------------------------------------
-    # 5.  ask the LLM *without* blocking
-    # ------------------------------------------------------------------
-    sys.stdin = open(0)                     # re-attach TTY for input()
-    question  = input(colors.GREEN + "Enter a task: " + colors.ENDC)
+    # 2) instantiate your two agents
+    agent1 = LLMAgent(1, arglist)
+    agent2 = LLMAgent(2, arglist)
 
-    print(colors.YELLOW + f"{llm_name}: thinking (async)…" + colors.ENDC)
-    reply_q          = chatbot.ask_async(question)   # returns instantly
-    waiting_for_llm  = True
+    # 3) pick ChatGPT
+    if not arglist.gpt:
+        raise RuntimeError("llm_proc only supports --gpt")
+    chatbot = ChatGPT(g_openai_config, arglist)
 
-    task_queue: list = []
-    max_steps        = 100
-    i = j = 0
+    # 4) ask the user
+    sys.stdin = open(0)
+    question = input(colors.GREEN + "Enter a task: " + colors.ENDC)
+    print(colors.YELLOW + "ChatGPT: thinking (async)…" + colors.ENDC)
+
+    # 5) fire-and-forget LLM call
+    reply_q = chatbot.ask_async(question)
+    waiting = True
+
+    task_queue = []
+    max_steps = 100
+    step_i = 0
+    task_j = 0
     done = False
 
-    # ------------------------------------------------------------------
-    # 6.  main control loop – never blocks >5 ms
-    # ------------------------------------------------------------------
+    # 6) main loop — never blocks >5ms
     while True:
-        time.sleep(0.005)        # 5 ms tick; keeps CPU low but responsive
+        time.sleep(0.005)
 
-        if done or arglist.manual:
-            continue             # nothing to do (manual mode ends here)
-
-        # 6-A Poll the LLM reply queue
-        if waiting_for_llm:
-            try:
-                reply = reply_q.get_nowait()
-                if isinstance(reply, Exception):
-                    print(colors.RED + "LLM error:\n" + str(reply) + colors.ENDC)
-                    done = True
-                    continue
-
-                code = extract_python_code(reply)
-                if not code:
-                    print(colors.RED + "No Python found in LLM reply" + colors.ENDC)
-                    done = True
-                    continue
-
-                print("\nExecuting LLM-generated code …")
-                local_env = {"agent1": agent1, "agent2": agent2}
-                exec(code, globals(), local_env)     # defines task_queue
-                task_queue = local_env["task_queue"]
-                waiting_for_llm = False
-                print(colors.GREEN + "Task queue ready!" + colors.ENDC)
-            except queue.Empty:
-                _apply_latest_state()
-                continue        # loop again
-
-        # 6-B normal simulator tick
-        _apply_latest_state()
-
-        i += 1
-        if i >= max_steps:
-            print(colors.RED + f"GAME OVER ({max_steps} steps)" + colors.ENDC)
-            done = True
+        if done:
             continue
 
-        func, arg = task_queue[j]
+        if waiting:
+            # poll for the LLM reply
+            try:
+                reply = reply_q.get_nowait()
+                # got it! either str or Exception
+                if isinstance(reply, Exception):
+                    print(colors.RED + "[llm_proc] LLM error:\n", reply, colors.ENDC)
+                    done = True
+                    continue
 
-        # switch control to correct human/LLM chef
+                # extract & exec the code
+                code = extract_python_code(reply)
+                if not code:
+                    print(colors.RED + "[llm_proc] ERROR: no code found" + colors.ENDC)
+                    done = True
+                    continue
+
+                local_env = {"agent1": agent1, "agent2": agent2}
+                exec(code, globals(), local_env)
+                task_queue = local_env.get("task_queue", [])
+                print(colors.GREEN + "[llm_proc] task_queue:", task_queue, colors.ENDC)
+
+                waiting = False
+            except queue.Empty:
+                _apply_latest_state()
+                continue
+
+        # once we have a task queue, step through it
+        _apply_latest_state()
+        # step_i += 1
+        # if step_i >= max_steps:
+        #     print(colors.RED + "[llm_proc] GAME OVER" + colors.ENDC)
+        #     done = True
+        #     continue
+
+        func, arg = task_queue[task_j]
+        # switch to chef 1 or 2
         if str(agent1) in str(func):
             agent1.reset_state()
             g_keyboard.press('1'); g_keyboard.release('1')
@@ -390,12 +386,11 @@ def llm_proc(arglist):
                 _apply_latest_state()
 
         if func(arg):
-            print(colors.GREEN + f"Task done: {func.__name__}({arg})" + colors.ENDC)
-            j += 1
-            if j == len(task_queue):
-                print(colors.GREEN + "ALL TASKS COMPLETE!" + colors.ENDC)
+            print(colors.GREEN + f"[llm_proc] completed {func.__name__}({arg})" + colors.ENDC)
+            task_j += 1
+            if task_j >= len(task_queue):
+                print(colors.GREEN + "[llm_proc] ALL TASKS COMPLETE!" + colors.ENDC)
                 done = True
-
 
 class RealAgent:
     """Real Agent object that performs task inference and plans."""
