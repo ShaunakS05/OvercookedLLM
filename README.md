@@ -41,7 +41,7 @@ python3 main.py --num-agents 2 --level partial-divider_salad --gpt
 
 Manually control agents with arrow keys (switch between agents by pressing 1 or 2):
 ```
-python3 main.py --num-agents 2 --level partial-divider_salad --gpt --manual
+python main.py --num-agents 2 --level partial-divider_salad --gpt --manual
 ```
 
 ## ToDo
