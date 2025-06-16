@@ -14,13 +14,27 @@ def index_2d(data, search):
     raise ValueError("{!r} is not in list".format(search))
 
 
-def find_path(start: Tuple[int, int], end: Tuple[int, int], level: list, cost: int=1) -> List[Tuple[int, int]]:
+def find_path(start: Tuple[int, int],
+              end  : Tuple[int, int],
+              level: list,
+              cost : int = 1,
+              verbose: bool = False) -> List[Tuple[int, int]]:
+
     path = search(level, cost, start, end)
-    #print(path, type(path))
-    print('\n'.join([''.join([colors.GREEN + "{:" ">3d}".format(item) + colors.ENDC if item >=0 else\
-                               "{:" ">3d}".format(item) for item in row]) for row in np.transpose(path)]))
-    result = []
-    i = 0
+
+    # ─── NEW: if A* failed, fall back to “no-path” sentinel ─────────────
+    if path is None:                       # ← search() gave up
+        return [start]                     # caller will revert to greedy step
+    # -------------------------------------------------------------------
+
+    if verbose:
+        print('\n'.join(
+            [''.join([colors.GREEN + f"{item:3d}" + colors.ENDC if item >= 0
+                      else f"{item:3d}"
+                      for item in row])
+             for row in np.transpose(path)]))
+
+    result, i = [], 0
     while True:
         try:
             position = index_2d(path, i)
@@ -29,6 +43,7 @@ def find_path(start: Tuple[int, int], end: Tuple[int, int], level: list, cost: i
         result.append(position)
         i += 1
     return result
+
 
 
 ######################################################################################################
