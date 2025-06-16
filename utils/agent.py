@@ -4,6 +4,7 @@
 from recipe_planner.stripsworld import STRIPSWorld
 import recipe_planner.utils as recipe_utils
 from recipe_planner.utils import *
+from typing import Tuple
 
 # Delegation planning
 from delegation_planner.bayesian_delegator import BayesianDelegator
@@ -35,6 +36,8 @@ from utils.environment import *
 from utils.utils import *
 from utils.chatgpt import ChatGPT, g_openai_config
 import pygame
+from utils.utils import colors
+import re
 
 
 
@@ -53,6 +56,18 @@ class LLMAgent:
         self.on_hand = None
         self.level = None
         self.item_locations = ITEM_LOCATIONS
+        if id == 1:                                 # print only once
+            print(colors.CYAN + "[DEBUG] fixtures & objects:",
+                  list(self.item_locations.keys()),
+                  colors.ENDC)
+        self.alias = {
+            # synonyms that a player might type:
+            "knife"         : "cutboard",      # one fixed cut-board on this layout
+            "cutboard"      : "cutboard",
+            "cut board"     : "cutboard",
+            "board"         : "cutboard",
+            # add more if you wish …
+        }
         self.history = []
         self.prev_state = None
         global g_max_steps
@@ -124,6 +139,33 @@ class LLMAgent:
             print(colors.YELLOW + f"agent{self.id}.on_hand = {self.on_hand}" + colors.ENDC)
         self.prev_state = (location, action_str, action_loc)
 
+    def _reachable(self, tile: Tuple[int, int]) -> bool:
+        """True if A* finds a path from the current chef position to *tile*."""
+        return bool(find_path(self.location, tile, self.level, verbose=False))
+
+    def _canonical(self, typed: str) -> str:
+        typed = typed.lower().strip()
+
+        # 1)  direct alias
+        if typed in self.alias:
+            typed = self.alias[typed]
+
+        # 2)  drop trailing number ('cutboard0' → 'cutboard')
+        base = re.sub(r"\d+$", "", typed)
+
+        # If the word is 'cutboard' / 'knife' → pick the first *reachable* id
+        if base == "cutboard":
+            for key in sorted(self.item_locations):          # cutboard0,1,…
+                if key.startswith("cutboard") and self._reachable(self.item_locations[key]):
+                    return key
+            return "cutboard0"                               # nothing reachable → dummy
+
+        # otherwise fall back to first key that starts with that base
+        for key in self.item_locations:
+            if key.startswith(base):
+                return key
+        return typed
+
     def reset_state(self, reset_on_hand: bool=False):
         """ reset the game state of the agent
         Args:
@@ -137,76 +179,151 @@ class LLMAgent:
 
     def plan_move_towards(self, dst: Tuple[int, int]) -> Tuple[int, int]:
         """
-        First try an A* route to `dst`.  If that point is blocked,
-        try each 4-neighbour square around it.  As a last resort fall
-        back to the greedy step.
+        Return a single (dx, dy) step that moves the chef toward **dst**.
+
+        • Try A* first;  
+        • fall back to neighbouring tiles when the goal itself is blocked;  
+        • if no route exists, use a simple greedy step.
         """
         if self.location == dst:
             return (0, 0)
 
-        def try_astar(target: Tuple[int, int]):
-            path = find_path(self.location, target, self.level, verbose=False)
-            return path if path and len(path) >= 2 else None
+        def astar(target: Tuple[int, int]):
+            p = find_path(self.location, target, self.level, verbose=False)
+            return p if p else None          # None => unreachable
 
-        # 1️⃣  straight to the goal
-        path = try_astar(dst)
+        # 1️⃣  direct A* route
+        path = astar(dst)
 
-        # 2️⃣  if the dispenser itself is blocked, aim for a touching tile
-        if path is None and self.level[dst[0]][dst[1]]:          # non-walkable
+        # 2️⃣  if the tile itself is blocked, aim for a walk-able neighbour
+        if path is None and self.level[dst[0]][dst[1]] != 0:
             for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
-                nbr = (dst[0] + dx, dst[1] + dy)
-                # skip if neighbour is outside map or blocked
-                if not (0 <= nbr[0] < len(self.level) and
-                        0 <= nbr[1] < len(self.level[0]) and
-                        self.level[nbr[0]][nbr[1]] == 0):
-                    continue
-                path = try_astar(nbr)
-                if path:
-                    break
-
-        # 3️⃣  good A* route found
+                n = (dst[0] + dx, dst[1] + dy)
+                if 0 <= n[0] < len(self.level) and 0 <= n[1] < len(self.level[0]) \
+                   and self.level[n[0]][n[1]] == 0:
+                    path = astar(n)
+                    if path:
+                        break
         if path:
-            next_sq = path[1]
-            return (next_sq[0] - self.location[0],
-                    next_sq[1] - self.location[1])
+        # ▸ path==[self.location] may also mean "no route at all"
+            if len(path) == 1 and self.location != dst:   # ← add this line
+                path = None 
 
-        # 4️⃣  still no path → fall back to greedy single-step
+        # 3️⃣  got a usable path?
+        if path and len(path) >= 2:
+            nxt = path[1]
+            return (nxt[0] - self.location[0], nxt[1] - self.location[1])
+
+        # 4️⃣  already standing on the target / neighbour
+        if path and len(path) == 1:
+            return (0, 0)
+
+        # 5️⃣  nothing found → greedy single step
         dx, dy = dst[0] - self.location[0], dst[1] - self.location[1]
         if abs(dx) > abs(dy):
             return (-1, 0) if dx < 0 else (1, 0)
         else:
             return (0, -1) if dy < 0 else (0, 1)
 
+
+        # ──────────────────────────────────────────────────────────────────
+    # LLMAgent helper – walk to a target object (or tile) and interact
+    # ──────────────────────────────────────────────────────────────────
     def fetch(self, item: str) -> bool:
-        # 1. if already in hand, done
-        if self.on_hand and item in self.on_hand:
-            return True
+        if item.lower().startswith("debug"):
+            # allow you to type “debug cutboard0” at the prompt and see
+            # exactly how the helper interprets it
+            print(colors.CYAN + "[DEBUG] raw item:", item, colors.ENDC)
+        """
+        Move the chef toward *item* and press SPACE.
+        Success:
+            • for movable objects  → once it sits in self.on_hand
+            • for fixtures/tiles   → once we stand on a walk-able tile
+                                      that can interact with it
+        """
+        # ── canonicalise what the user typed ────────────────────────────
+        canonical = self._canonical(item)
+        if canonical not in self.item_locations:
+            canonical = next((k for k in self.item_locations if k.startswith(canonical)), canonical)
+        if canonical not in self.item_locations:
+            return True                                  # unknown, skip
 
-        # 2. compute next step
-        dst, _ = get_dst_tuple(item, self.level, self.item_locations)
-        step = self.plan_move_towards(dst)
+        dst, _   = get_dst_tuple(canonical, self.level, self.item_locations)
+        if self.level[dst[0]][dst[1]] != 0:
+            movable = False
+        else:
+            movable = canonical in MOVABLES
 
-        # 3. post into pygame event queue
-        key = {
-            (-1,0): pygame.K_LEFT,
-            ( 1,0): pygame.K_RIGHT,
-            ( 0,-1): pygame.K_UP,
-            ( 0, 1): pygame.K_DOWN
-        }.get(step, pygame.K_SPACE)  # SPACE when step==(0,0)
+        # ── quick success-check BEFORE we move ──────────────────────────
+        if movable:
+            if self.on_hand and canonical in self.on_hand:
+                return True
+        else:
+            if self.location == dst:                     # already on tile
+                pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {'key': pygame.K_SPACE}))
+                pygame.event.post(pygame.event.Event(pygame.KEYUP,   {'key': pygame.K_SPACE}))
+                time.sleep(0.05)
+                return True
 
+        # ── choose a *reachable* standing square ────────────────────────
+        if movable:
+            stand = dst                               # stand on top
+        else:
+        # 🚩 case 1 – the fixture sits on a walk-able floor tile
+            if self.level[dst[0]][dst[1]] == 0:
+                stand = dst
+            else:
+            # 🚩 case 2 – dispenser/wall tile → look for a reachable neighbour
+                stand = None
+                for radius in range(1, 8):            # keep enlarging the ring
+                    ring = [(dst[0]+dx, dst[1]+dy)
+                        for dx in range(-radius, radius+1)
+                        for dy in range(-radius, radius+1)
+                        if abs(dx)+abs(dy) == radius]
+                    for n in ring:
+                        if 0 <= n[0] < len(self.level) and 0 <= n[1] < len(self.level[0]) \
+                        and self.level[n[0]][n[1]] == 0 \
+                        and find_path(self.location, n, self.level, verbose=False):
+                            stand = n
+                            break
+                    if stand:
+                        break
+                if stand is None:                     # still nothing → give up
+                    return True
+
+            if canonical.startswith("cutboard"):
+                print(colors.CYAN +
+                    f"[DEBUG] stand for {canonical}: {stand}  "
+                    f"(chef at {self.location})" +
+                    colors.ENDC)
+
+        # ── take ONE step (or press SPACE) ──────────────────────────────
+        step = self.plan_move_towards(stand)
+        key  = {(-1, 0): pygame.K_LEFT,  (1, 0): pygame.K_RIGHT,
+                ( 0,-1): pygame.K_UP,    (0, 1): pygame.K_DOWN}.get(step,
+                                                                    pygame.K_SPACE)
+        if canonical.startswith("cutboard"):
+            print(colors.CYAN +
+                  f"[DEBUG] {canonical} → step {step}, key {key}" +
+                  colors.ENDC)
         pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {'key': key}))
         pygame.event.post(pygame.event.Event(pygame.KEYUP,   {'key': key}))
-
         time.sleep(0.12)
 
-        # 4. return True once set_state() has updated on_hand
-        return bool(self.on_hand and item in self.on_hand)
+        # ── success-check AFTER the step ────────────────────────────────
+        if movable:
+            return bool(self.on_hand and canonical in self.on_hand)
+        else:
+            return self.location == stand
+
+
 
     def put_onto(self, item: str) -> bool:
         if not self.on_hand:
             return True
 
-        dst, _ = get_dst_tuple(item, self.level, self.item_locations)
+        canonical = self._canonical(item)
+        dst, _ = get_dst_tuple(canonical, self.level, self.item_locations)
         step = self.plan_move_towards(dst)
 
         key = {
@@ -267,19 +384,26 @@ class LLMAgent:
 
 def llm_proc(arglist):
     """
-    Runs in its own process.  
-    • Drains the game→LLM pipe on a background thread  
-    • Asks ChatGPT via ask_async() so it never blocks  
-    • Parses & execs the reply into a task_queue  
-    • Steps through that queue, pressing keys until done
+    Runs in its own thread:
+      • keeps a live pipe from GamePlay → LLM agents
+      • after every completed task queue, asks the user for the next one
     """
-    import queue, threading, sys, time
-
+    import queue, threading, time
     from multiprocessing.connection import Listener
 
-    # 1) set up listener + state queue
-    listener = Listener(("localhost", 6000))
-    state_q: queue.Queue = queue.Queue(maxsize=1)
+    # ── 0. tiny helpers ────────────────────────────────────────────────────
+    def _apply_latest_state():
+        while not state_q.empty():
+            _, aid, loc, act_str, act_loc = state_q.get_nowait()
+            (agent1 if aid == 1 else agent2).set_state(loc, act_str, act_loc)
+
+    def _spin(delay=0.03):
+        _apply_latest_state()
+        time.sleep(delay)
+
+    # ── 1. pipe from GamePlay → this thread ───────────────────────────────
+    listener   = Listener(("localhost", 6000))
+    state_q    = queue.Queue(maxsize=1)          # keep only the freshest frame
 
     def _pipe_reader():
         conn = None
@@ -291,106 +415,72 @@ def llm_proc(arglist):
                 msg = conn.recv()
             except EOFError:
                 break
-            # keep only freshest state
             while not state_q.empty():
                 state_q.get_nowait()
             state_q.put_nowait(msg)
 
     threading.Thread(target=_pipe_reader, daemon=True).start()
 
-    def _apply_latest_state():
-        while not state_q.empty():
-            _, agent_id, loc, act_str, act_loc = state_q.get_nowait()
-            if agent_id == 1:
-                agent1.set_state(loc, act_str, act_loc)
-            else:
-                agent2.set_state(loc, act_str, act_loc)
-
-    # 2) instantiate your two agents
+    # ── 2. the two controllable chefs ─────────────────────────────────────
     agent1 = LLMAgent(1, arglist)
     agent2 = LLMAgent(2, arglist)
 
-    # 3) pick ChatGPT
+    # ── 3. choose LLM backend ─────────────────────────────────────────────
     if not arglist.gpt:
-        raise RuntimeError("llm_proc only supports --gpt")
+        raise RuntimeError("llm_proc only supports --gpt right now")
     chatbot = ChatGPT(g_openai_config, arglist)
 
-    # 4) ask the user
-    sys.stdin = open(0)
-    question = input(colors.GREEN + "Enter a task: " + colors.ENDC)
-    print(colors.YELLOW + "ChatGPT: thinking (async)…" + colors.ENDC)
-
-    # 5) fire-and-forget LLM call
-    reply_q = chatbot.ask_async(question)
-    waiting = True
-
-    task_queue = []
-    max_steps = 100
-    step_i = 0
-    task_j = 0
-    done = False
-
-    # 6) main loop — never blocks >5ms
+    # ── 4. conversational loop: ask → plan → execute → ask again ─────────
     while True:
-        time.sleep(0.005)
+        # ask the player
+        sys.stdin = open(0)
+        question  = input(colors.GREEN + "Enter a task: " + colors.ENDC)
+        print(colors.YELLOW + "ChatGPT: thinking (async)…" + colors.ENDC)
 
-        if done:
-            continue
+        reply_q   = chatbot.ask_async(question)
+        waiting   = True
+        task_queue: list[tuple[callable, str]] = []
+        task_j    = 0
 
-        if waiting:
-            # poll for the LLM reply
-            try:
-                reply = reply_q.get_nowait()
-                # got it! either str or Exception
-                if isinstance(reply, Exception):
-                    print(colors.RED + "[llm_proc] LLM error:\n", reply, colors.ENDC)
-                    done = True
-                    continue
+        # execute until that queue is finished, then we’ll ask again
+        while True:
+            _spin()
 
-                # extract & exec the code
-                code = extract_python_code(reply)
-                if not code:
-                    print(colors.RED + "[llm_proc] ERROR: no code found" + colors.ENDC)
-                    done = True
-                    continue
+            # ── wait for the LLM reply just once ────────────────────────
+            if waiting:
+                try:
+                    reply = reply_q.get_nowait()
+                    if isinstance(reply, Exception):
+                        print(colors.RED + "[llm_proc] LLM error:\n", reply, colors.ENDC)
+                        break                                    # abandon this question
 
-                local_env = {"agent1": agent1, "agent2": agent2}
-                exec(code, globals(), local_env)
-                task_queue = local_env.get("task_queue", [])
-                print(colors.GREEN + "[llm_proc] task_queue:", task_queue, colors.ENDC)
+                    # pull the Python block, exec to get task_queue
+                    code = extract_python_code(reply) or "task_queue=[]"
+                    local_env = {"agent1": agent1, "agent2": agent2}
+                    exec(code, globals(), local_env)
+                    task_queue = local_env.get("task_queue", [])
+                    print(colors.GREEN + "[llm_proc] task_queue:", task_queue, colors.ENDC)
+                    waiting = False
+                except queue.Empty:
+                    continue                                      # still thinking
 
-                waiting = False
-            except queue.Empty:
-                _apply_latest_state()
-                continue
-
-        # once we have a task queue, step through it
-        _apply_latest_state()
-        # step_i += 1
-        # if step_i >= max_steps:
-        #     print(colors.RED + "[llm_proc] GAME OVER" + colors.ENDC)
-        #     done = True
-        #     continue
-
-        func, arg = task_queue[task_j]
-        # switch to chef 1 or 2
-        if str(agent1) in str(func):
-            agent1.reset_state()
-            g_keyboard.press('1'); g_keyboard.release('1')
-            while agent1.location is None:
-                _apply_latest_state()
-        else:
-            agent2.reset_state()
-            g_keyboard.press('2'); g_keyboard.release('2')
-            while agent2.location is None:
-                _apply_latest_state()
-
-        if func(arg):
-            print(colors.GREEN + f"[llm_proc] completed {func.__name__}({arg})" + colors.ENDC)
-            task_j += 1
+            # ── finished every task in this queue? ───────────────────────
             if task_j >= len(task_queue):
-                print(colors.GREEN + "[llm_proc] ALL TASKS COMPLETE!" + colors.ENDC)
-                done = True
+                break                                              # go ask for the next order
+
+            func, arg = task_queue[task_j]
+            chef  = agent1 if str(agent1) in str(func) else agent2
+            g_keyboard.press(str(chef.id)); g_keyboard.release(str(chef.id))
+            chef.reset_state()
+
+            # wait until GamePlay tells us where that chef is
+            while chef.location is None:
+                _spin(0.01)
+
+            # keep calling the helper until it returns True
+            if func(arg):
+                print(colors.GREEN + f"[llm_proc] completed {func.__name__}({arg})" + colors.ENDC)
+                task_j += 1
 
 class RealAgent:
     """Real Agent object that performs task inference and plans."""
