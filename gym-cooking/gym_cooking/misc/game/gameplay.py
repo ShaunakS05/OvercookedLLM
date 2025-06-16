@@ -62,6 +62,9 @@ class GamePlay(Game):
             self._running = False
 
         while self._running:
+            self.env.t += 1
+            self.env.world.env_time = self.env.t
+            self.env.update_cooking()
             for event in pygame.event.get():
                 self.on_event(event)
             self.on_render()

@@ -140,15 +140,34 @@ Pre: SomeState(X), SomeState(Y)
 Post: Merged(X-Y), !SomeState(X), !SomeState(Y)
 '''
 class Merge(Action):
+    """
+    - If arg is a Burger we require Cooked(arg)
+    - If arg is a veggie we require Chopped(arg)
+    - If arg is Plate we require Fresh(Plate) (i.e. just an empty plate)
+    """
     def __init__(self, arg1, arg2, pre=None, post_add=None):
         self.args = (arg1, arg2)
-        #self.args = tuple(sorted([arg1, arg2]))
-        # sorted because it doesn't matter order of merging
 
-        self.pre_default = [Chopped(arg1), Merged(arg2)]
-        self.post_add_default = [Merged('-'.join(sorted(arg1.split('-') + arg2.split('-'))))]
+        def ready(x):
+            if x == "Plate" or x == "Bun":
+                return Fresh(x)                    # buns & empty plates are just fresh
+            if "-" in x:                           # any composite object is already merged
+                return Merged(x)
+            if "Burger" in x.split("-"):           # single burger needs to be cooked
+                return Cooked(x)
+            return Chopped(x)                      # veggies
+
+
+        # both items must be "ready" before merging
+        self.pre_default = [ready(arg1), ready(arg2)]
+
+        # result is a merged object whose name is the sorted concat
+        self.post_add_default = [
+            Merged('-'.join(sorted(arg1.split('-') + arg2.split('-'))))
+        ]
 
         Action.__init__(self, 'Merge', pre, post_add)
+
 '''
 Deliver(X)
 Pre: Plated(X)
@@ -160,6 +179,14 @@ class Deliver(Action):
         self.pre_default = [Merged(obj)]
         self.post_add_default = [Delivered(obj)]
         Action.__init__(self, 'Deliver', pre, post_add)
+
+class Cook(Action):
+    def __init__(self, obj, pre=None, post_add=None):
+        self.args = (obj,)
+        self.pre_default = [Fresh(obj)]  # or a separate predicate like Raw(obj)
+        self.post_add_default = [Cooked(obj)]
+        Action.__init__(self, 'Cook', pre, post_add)
+
 
 
 

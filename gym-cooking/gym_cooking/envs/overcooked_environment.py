@@ -148,6 +148,7 @@ class OvercookedEnvironment(gym.Env):
         self.sim_agents = []
         self.agent_actions = {}
         self.t = 0
+        self.world.env_time = self.t
 
         # For visualizing episode.
         self.rep = []
@@ -185,6 +186,8 @@ class OvercookedEnvironment(gym.Env):
     def step(self, action_dict):
         # Track internal environment info.
         self.t += 1
+        self.world.env_time = self.t
+        
         print("===============================")
         print("[environment.step] @ TIMESTEP {}".format(self.t))
         print("===============================")
@@ -199,6 +202,8 @@ class OvercookedEnvironment(gym.Env):
 
         # Execute.
         self.execute_navigation()
+
+        self.update_cooking()
 
         # Visualize.
         self.display()
@@ -478,3 +483,11 @@ class OvercookedEnvironment(gym.Env):
         # Save all distances under world as well.
         self.world.distances = self.distances
 
+    def update_cooking(self):
+        for skillet in self.world.objects.get('Skillet', []):
+            if skillet.holding is None:
+                continue
+            obj = skillet.holding
+            if obj.cook_timer is not None and self.t >= obj.cook_timer:
+                cook_object(obj)          # converts Fresh → Cooked
+                obj.cook_timer = None     # done

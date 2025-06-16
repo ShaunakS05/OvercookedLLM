@@ -1,5 +1,6 @@
 from utils.core import *
 import numpy as np
+from utils.core import cook_object, Skillet
 
 def interact(agent, world):
     """Carries out interaction for this agent taking this action in this world.
@@ -49,13 +50,20 @@ def interact(agent, world):
 
         # if occupied gridsquare in front --> try merging
         elif world.is_occupied(gs.location):
-            obj = world.get_object_at(gs.location, None, find_held_objects=False)
-            if mergeable(agent.holding, obj):
-                world.remove(obj)
-                o = gs.release()
-                world.remove(agent.holding)
-                agent.acquire(obj)
-                world.insert(agent.holding)
+            other = world.get_object_at(gs.location, None, find_held_objects=False)
+            if mergeable(agent.holding, other):
+                # take the counter object off the grid
+                gs_obj = gs.release()     
+                world.remove(gs_obj)
+                # remove the agent’s held object from the world registry
+                held_obj = agent.holding
+                world.remove(held_obj)
+                # merge them into a single Object
+                gs_obj.merge(held_obj)
+                # now that gs_obj has both contents, agent picks it up
+                agent.acquire(gs_obj)
+                world.insert(gs_obj)
+                # if you’re in “play” mode you also want it to stay on the counter, so re‐drop:
                 if world.arglist.play:
                     gs.acquire(agent.holding)
                     agent.release()
@@ -66,6 +74,9 @@ def interact(agent, world):
             if isinstance(gs, Cutboard) and obj.needs_chopped() and not world.arglist.play:
                 obj.chop()
             else:
+                if isinstance(gs, Skillet):
+                    obj.cook_timer = world.env_time + 450
+                    print(f"[DEBUG] Timer set at {obj.cook_timer}, now={world.env_time}")
                 gs.acquire(obj)
                 agent.release()
                 assert not world.get_object_at(gs.location, obj, find_held_objects=False).is_held, "Verifying put down works"

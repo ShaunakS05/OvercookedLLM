@@ -145,6 +145,7 @@ class Object:
         self.update_names()
         self.collidable = False
         self.dynamic = False
+        self.cook_timer = None
 
     def __str__(self):
         res = "-".join(list(map(lambda x : str(x), sorted(self.contents, key=lambda i: i.name))))
@@ -241,6 +242,20 @@ def mergeable(obj1, obj2):
             return False  # more than 1 plate
     return True
 
+def cook_object(obj):
+    """
+    If the object is exactly one raw Burger (FreshBurger),
+    flip it to CookedBurger and update names.
+    Returns True if a change was made.
+    """
+    if obj is None or len(obj.contents) != 1:
+        return False
+    burger = obj.contents[0]
+    if isinstance(burger, Burger) and burger.get_state() == 'Fresh':       
+        burger.update_state()      # Fresh -> Cooked
+        obj.update_names()         # FreshBurger -> CookedBurger
+        return True
+    return False
 
 # -----------------------------------------------------------
 
@@ -341,7 +356,7 @@ class Onion(Food):
 class Burger(Food):
     def __init__(self, state_index = 0):
         self.state_index = state_index
-        self.state_seq = [FoodState.FRESH, FoodState.COOKED]
+        self.state_seq = FoodSequence.FRESH_COOKED
         self.rep = 'b'
         self.name = 'Burger'
         Food.__init__(self)
