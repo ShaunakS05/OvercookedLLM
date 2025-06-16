@@ -1,7 +1,7 @@
 from utils.core import *
 import numpy as np
 from typing import Tuple
-
+from utils.core import cook_object, Skillet
 
 def __extract_object_names(s: str) -> str:
     result = []
@@ -83,6 +83,8 @@ def interact(agent, world) -> Tuple[str, Tuple[int, int]]:
                 obj.chop()
             else:
                 # --gpt
+                if isinstance(gs,Skillet):
+                    cook_object(obj)
                 action_str = f"put {__extract_object_names(str(obj.contents))} onto"
                 gs.acquire(obj) # obj is put onto gridsquare
                 agent.release()
